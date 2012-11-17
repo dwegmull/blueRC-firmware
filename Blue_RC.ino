@@ -114,6 +114,19 @@ void set_servos_safe()
     timeout = DEFAULT_TIMEOUT;
   }
 }
+
+char char2digit(char c)
+{
+  if(c < 0x0A)
+  {
+    return c + 0x30;
+  }
+  else
+  {
+    return c + 0x41 - 0x0A;
+  }
+}
+
 char digit2char(char digit)
 {
   if(('0' <= digit) && ('9' >= digit))
@@ -135,6 +148,12 @@ char ASCII2char(char upper, char lower)
   return (digit2char(upper) << 4) + digit2char(lower); 
 }
 
+void char2ASCII(char c, char *a)
+{
+  *a = char2digit((c >> 4) & 0x0F);
+  a++;
+  *a = char2digit(c & 0x0F);
+}
 void setup()
 {
   Serial.begin(57600);
@@ -199,17 +218,17 @@ void loop()
               if(loopCt < NUMBER_OF_SERVOS)
               {
                 // set servo
-                servos[loopCt].write(serialBuff[bufferOffset]);
+                servos[loopCt].write(ASCII2char(serialBuff[bufferOffset], serialBuff[bufferOffset + 1]));
               }
               else
               {
                 if((loopCt >= START_OF_EEPROM) && (loopCt <= MAX_REGISTERS))
                 {
                   // write to an EEPROM register
-                  EEPROM.write(loopCt - START_OF_EEPROM, serialBuff[bufferOffset]);
+                  EEPROM.write(loopCt - START_OF_EEPROM, ASCII2char(serialBuff[bufferOffset], serialBuff[bufferOffset + 1]));
                 }
               }
-              bufferOffset++;
+              bufferOffset += 2;
             }
             Serial.write("#OK?");
           }
@@ -229,17 +248,17 @@ void loop()
               if(loopCt < NUMBER_OF_SERVOS)
               {
                 // read servo
-                serialBuff[bufferOffset] = servos[loopCt].read();
+                char2ASCII(servos[loopCt].read(), &serialBuff[bufferOffset]);
               }
               else
               {
                 if((loopCt >= START_OF_EEPROM) && (loopCt <= MAX_REGISTERS))
                 {
                   // read from an EEPROM register
-                  serialBuff[bufferOffset] = EEPROM.read(loopCt - START_OF_EEPROM);
+                  char2ASCII(EEPROM.read(loopCt - START_OF_EEPROM), &serialBuff[bufferOffset]);
                 }
               }
-              bufferOffset++;
+              bufferOffset += 2;
             }
             serialBuff[TX_START] = SERIAL_START_TX;
             serialBuff[TX_RESPONSE_LO] = RESP_LOW_AN;
