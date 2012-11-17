@@ -5,16 +5,17 @@
 // You may use it any way you want.
 // I'm not responsible if it doesn't work or causes any damages.
 // Send your questions to david at wegmuller dot org
+#define DEBUG
 
 #include <EEPROM.h>
 #include <Servo.h>
 // Pins
-#define PIN_THROTTLE  2
-#define PIN_REVERSE1  3
-#define PIN_REVERSE2  4
-#define PIN_DRAIN1    5
-#define PIN_DRAIN2    6
-#define PIN_WHISTLE   7
+#define PIN_THROTTLE  3
+#define PIN_REVERSE1  4
+#define PIN_REVERSE2  5
+#define PIN_DRAIN1    6
+#define PIN_DRAIN2    7
+#define PIN_WHISTLE   8
 #define NUMBER_OF_SERVOS 6
 
 // Timeout related
@@ -98,7 +99,7 @@ void set_servos_safe()
     // Get default servo position from the EEPROM
     do
     {
-      servos[loopCt].write(EEPROM.read(REG_SAFE_BASE + loopCt - START_OF_EEPROM));
+      servos[loopCt].write((int)EEPROM.read(REG_SAFE_BASE + loopCt - START_OF_EEPROM));
     }
     while(loopCt--);
     timeout = EEPROM.read(REG_DISC_TIMEOUT - START_OF_EEPROM);
@@ -137,15 +138,15 @@ char digit2char(char digit)
   {
     if (('A' <= digit) && ('Z' >= digit))
     {
-      return (digit - 'A');
+      return (digit - 'A' + 10);
     }
   }
   return 0;
 }
 
-char ASCII2char(char upper, char lower)
+int ASCII2char(char upper, char lower)
 {
-  return (digit2char(upper) << 4) + digit2char(lower); 
+  return ((int)((digit2char(upper) << 4) + digit2char(lower))) & 0x00FF; 
 }
 
 void char2ASCII(char c, char *a)
@@ -202,7 +203,10 @@ void loop()
       
       regBase = ASCII2char(serialBuff[RX_REGISTER_HI], serialBuff[RX_REGISTER_LO]);
       dataSize = ASCII2char(serialBuff[RX_SIZE_HI], serialBuff[RX_SIZE_LO]);
-      
+#ifdef DEBUG
+      Serial.println((int)regBase);
+      Serial.println((int)dataSize);
+#endif
       switch(serialBuff[RX_COMMAND_OFFSET])
       {
         default:
@@ -213,11 +217,14 @@ void loop()
           {
             char loopCt, bufferOffset;
             bufferOffset = RX_DATA_START;
-            for(loopCt = regBase; loopCt < regBase + dataSize + 1; loopCt++)
+            for(loopCt = regBase; loopCt < (regBase + dataSize); loopCt++)
             {
               if(loopCt < NUMBER_OF_SERVOS)
               {
                 // set servo
+#ifdef DEBUG
+                Serial.print(ASCII2char(serialBuff[bufferOffset], serialBuff[bufferOffset + 1]));
+#endif                
                 servos[loopCt].write(ASCII2char(serialBuff[bufferOffset], serialBuff[bufferOffset + 1]));
               }
               else
@@ -242,8 +249,11 @@ void loop()
           if(dataSize)
           {
             char loopCt, bufferOffset;
+#ifdef DEBUG
+      Serial.println("In COM_QUERY");
+#endif
             bufferOffset = TX_DATA_START;
-            for(loopCt = regBase; loopCt < regBase + dataSize + 1; loopCt++)
+            for(loopCt = regBase; loopCt < (regBase + dataSize); loopCt++)
             {
               if(loopCt < NUMBER_OF_SERVOS)
               {
@@ -263,7 +273,10 @@ void loop()
             serialBuff[TX_START] = SERIAL_START_TX;
             serialBuff[TX_RESPONSE_LO] = RESP_LOW_AN;
             serialBuff[TX_RESPONSE_HI] = RESP_HIGH_AN;
-            serialBuff[TX_END_BASE + bufferOffset] = SERIAL_END_TX;
+            serialBuff[bufferOffset] = SERIAL_END_TX;
+            serialBuff[bufferOffset + 1] = 0;
+            Serial.print(serialBuff);
+            
           }
           else
           {
