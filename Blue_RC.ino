@@ -5,7 +5,8 @@
 // You may use it any way you want.
 // I'm not responsible if it doesn't work or causes any damages.
 // Send your questions to david at wegmuller dot org
-#define DEBUG
+
+//#define DEBUG
 
 #include <EEPROM.h>
 #include <Servo.h>
