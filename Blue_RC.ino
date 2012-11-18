@@ -34,16 +34,17 @@
 #define RX_SIZE_HI            3
 #define RX_SIZE_LO            4
 #define RX_DATA_START         5
-#define TX_START              0
-#define TX_RESPONSE_LO        1
-#define TX_RESPONSE_HI        2
-#define TX_DATA_START         3
-#define TX_END_BASE           4
+#define TX_RESPONSE           0
+#define TX_REGISTER_HI        1
+#define TX_REGISTER_LO        2
+#define RX_SIZE_HI            3
+#define RX_SIZE_LO            4
+#define TX_DATA_START         5
+#define TX_END_BASE           6
 #define COM_COMMAND           'C'
 #define COM_QUERY             'Q'
 #define COM_KEEPALIVE         'K'
-#define RESP_LOW_AN           'A'
-#define RESP_HIGH_AN          'N'
+#define RESP                  'A'
 
 // Register locations
 #define  REG_THROTTLE         0
@@ -211,7 +212,7 @@ void loop()
       switch(serialBuff[RX_COMMAND_OFFSET])
       {
         default:
-          Serial.write("#KO?");
+          Serial.write("#N?");
         break;
         case COM_COMMAND:
           if(dataSize)
@@ -238,12 +239,12 @@ void loop()
               }
               bufferOffset += 2;
             }
-            Serial.write("#OK?");
+            Serial.write("#P?");
           }
           else
           {
             // We don't know how to write 0 registers
-            Serial.write("#KO?");
+            Serial.write("#N?");
           }
         break;
         case COM_QUERY:
@@ -271,22 +272,21 @@ void loop()
               }
               bufferOffset += 2;
             }
-            serialBuff[TX_START] = SERIAL_START_TX;
-            serialBuff[TX_RESPONSE_LO] = RESP_LOW_AN;
-            serialBuff[TX_RESPONSE_HI] = RESP_HIGH_AN;
+            serialBuff[TX_RESPONSE] = RESP;
             serialBuff[bufferOffset] = SERIAL_END_TX;
             serialBuff[bufferOffset + 1] = 0;
+            Serial.write("#");
             Serial.print(serialBuff);
             
           }
           else
           {
             // We don't know how to read nothing!
-            Serial.write("#KO?");
+            Serial.write("#N?");
           }
         break;
         case COM_KEEPALIVE:
-          Serial.write("#OK?");
+          Serial.write("#P?");
         break;
       }
     }
