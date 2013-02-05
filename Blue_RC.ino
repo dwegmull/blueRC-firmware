@@ -9,22 +9,43 @@
 //#define DEBUG
 
 #include <EEPROM.h>
-#include <Servo.h>
+#include <avr/interrupt.h>
+#include <avr/io.h>
+
 // Pins
 #define PIN_THROTTLE  3
+#define THROTTLE_PORT PORTD
+#define THROTTLE_MASK 0x08
+#define THROTTLE_DIR DDRD
 #define PIN_REVERSE1  4
+#define REVERSE1_PORT PORTD
+#define REVERSE1_MASK 0x10
+#define REVERSE1_DIR DDRD
 #define PIN_REVERSE2  5
+#define REVERSE2_PORT PORTD
+#define REVERSE2_MASK 0x20
+#define REVERSE2_DIR DDRD
 #define PIN_DRAIN1    6
+#define DRAIN1_PORT PORTD
+#define DRAIN1_MASK 0x40
+#define DRAIN1_DIR DDRD
 #define PIN_DRAIN2    7
+#define DRAIN2_PORT PORTD
+#define DRAIN2_MASK 0x80
+#define DRAIN2_DIR DDRD
 #define PIN_WHISTLE   8
+#define WHISTLE_PORT PORTB
+#define WHISTLE_MASK 0x01
+#define WHISTLE_DIR DDRB
 #define NUMBER_OF_SERVOS 6
+
 
 // Timeout related
 #define DEFAULT_TIMEOUT      4 * 60 // four Minutes in Seconds
 
 // Serial and protocol definitions
 #define SERIAL_BUFF_SIZE      100
-#define SERIAL_START_RX       "@"
+#define SERIAL_START_RX       '@'
 #define SERIAL_END_RX         '!'
 #define SERIAL_START_TX       '#'
 #define SERIAL_END_TX         '?'
@@ -85,10 +106,27 @@
 #define  START_OF_EEPROM      REG_EEPROM_VALID
 #define  REG_SAFE_BASE        REG_SAFE_THROTTLE
 
-Servo servos[NUMBER_OF_SERVOS];
+char servos[NUMBER_OF_SERVOS];
+#define SERVO_THROTTLE 0
+#define SERVO_REVERSER1 1
+#define SERVO_REVERSER2 2
+#define SERVO_DRAIN1    3
+#define SERVO_DRAIN2    4
+#define SERVO_WHISTLE   5
+
 char serialBuff[SERIAL_BUFF_SIZE];
-char timeout;
-unsigned long timeCt;
+volatile unsigned char timeout;
+char timeCt;
+char dataSize;
+
+char servoState;
+union w2b
+{
+int w;
+byte b[2];
+} word2bytes;
+
+
 
 // Set the servos to a safe position: either the
 // one stored in EEPROM, if available or mid point otherwise.
@@ -101,7 +139,7 @@ void set_servos_safe()
     // Get default servo position from the EEPROM
     do
     {
-      servos[loopCt].write((int)EEPROM.read(REG_SAFE_BASE + loopCt - START_OF_EEPROM));
+      servos[loopCt] = EEPROM.read(REG_SAFE_BASE + loopCt - START_OF_EEPROM);
     }
     while(loopCt--);
     timeout = EEPROM.read(REG_DISC_TIMEOUT - START_OF_EEPROM);
@@ -111,7 +149,7 @@ void set_servos_safe()
     // No calibration data: use 50% (90 degrees)
     do
     {
-      servos[loopCt].write(90);
+      servos[loopCt] = 127;
     }
     while(loopCt--);
     timeout = DEFAULT_TIMEOUT;
@@ -157,16 +195,105 @@ void char2ASCII(char c, char *a)
   a++;
   *a = char2digit(c & 0x0F);
 }
+
+// Receives a packet over the UART
+// Returns 0 if a packet arrived, 1 if timeout, 2 if error
+char receivePacket(void)
+{
+  while(timeout > 1)
+  {
+
+    if(UCSR0A & (1 << RXC0))
+    {
+
+      // A character arrived: check if it's a start of packet
+      if(UDR0 == SERIAL_START_RX)
+      {
+        
+        // found a start of packet: read the rest of it
+        dataSize = 0;
+        while(timeout > 1)
+        {
+          // Receiving a packet
+          if(UCSR0A & (1 << RXC0))
+          {
+            serialBuff[dataSize] = UDR0;
+            if(serialBuff[dataSize] == SERIAL_END_RX)
+            {
+              dataSize++;
+              return 0;
+            }
+            dataSize++;
+            if(dataSize > SERIAL_BUFF_SIZE)
+            {
+              return 2;
+            }
+          }
+        }
+        return 1;
+      }
+    }
+  }
+  return 1;  
+}
+
+void txString(char* s)
+{
+  // Loop through the string
+  while(*s != 0)
+  {
+    // Wait for the UART Tx to be ready
+    while(0 == (UCSR0A & (1 << UDRE0)));
+    
+    UDR0 = *s;
+    s++;
+  }
+}
+
 void setup()
 {
-  Serial.begin(57600);
-  servos[REG_THROTTLE].attach(PIN_THROTTLE);
-  servos[REG_REVERSE1].attach(PIN_REVERSE1);
-  servos[REG_REVERSE2].attach(PIN_REVERSE2);
-  servos[REG_DRAIN1].attach(PIN_DRAIN1);
-  servos[REG_DRAIN2].attach(PIN_DRAIN2);
-  servos[REG_WHISTLE].attach(PIN_WHISTLE);
+  // All servo signals are output low
+  THROTTLE_DIR |= THROTTLE_MASK;
+  THROTTLE_PORT &= ~THROTTLE_MASK;
+  REVERSE1_DIR |= REVERSE1_MASK;
+  REVERSE1_PORT &= ~REVERSE1_MASK;
+  REVERSE2_DIR |= REVERSE2_MASK;
+  REVERSE2_PORT &= ~REVERSE2_MASK;
+  DRAIN1_DIR |= DRAIN1_MASK;
+  DRAIN1_PORT &= ~DRAIN1_MASK;
+  DRAIN2_DIR |= DRAIN2_MASK;
+  DRAIN2_PORT &= ~DRAIN2_MASK;
+  WHISTLE_DIR |= WHISTLE_MASK;
+  WHISTLE_PORT &= ~WHISTLE_MASK;
+
   set_servos_safe();
+  // Configure timer 1 to generate the servo pulses.
+  cli();
+ //set timer1 interrupt at 50Hz
+  TCCR1A = 0;// set entire TCCR1A register to 0
+  TCCR1B = 0;// same for TCCR1B
+  TCNT1  = 0;//initialize counter value to 0
+  TIFR1 |= ((1 << OCF1A) | (1 << OCF1B));
+  // set compare match register for 20mS period
+  OCR1A = 2500;
+  // turn on CTC mode
+  TCCR1B |= (1 << WGM12);
+  // Set CS11 and CS12 bits for 64 prescaler
+  TCCR1B |= ((1 << CS10) | (1 << CS11));  
+  // enable timer compare interrupt
+  TIMSK1 |= (1 << OCIE1A);
+  
+  // disable timer 0 to prevent jitter on the PWMs
+  TCCR0B = 0;
+  // Setup the UART for 57600 bits/S
+  UBRR0H = 0;
+  UBRR0L = 16;
+  // Enable receiver and transmitter
+  UCSR0B = (1<<RXEN0)|(1<<TXEN0);
+  UCSR0A = (1<<U2X0);
+  // Set frame format: 8 data, 1 stop bit
+  UCSR0C = (3<<UCSZ00);
+  sei();
 }
 
 void loop()
@@ -175,121 +302,206 @@ void loop()
   if(timeout)
   {
     // check it
-    if((timeCt + 1000) < millis())
-    {
-      timeCt = millis();
-      timeout--;
-    }
-    if(0 == timeout)
+    if(timeout == 1)
     {
       set_servos_safe();
     }
   }
-  if(Serial.find(SERIAL_START_RX))
+ 
+  if(0 == receivePacket())
   {
-    // Found a start of packet: now look for the rest of it
-    if(0 < Serial.readBytesUntil(SERIAL_END_RX, serialBuff, SERIAL_BUFF_SIZE))
+    char regBase = 0;
+  
+    // We have a valid packet: reset the keepalive timer and let's process the packet
+    if(0x42 == EEPROM.read(REG_EEPROM_VALID - START_OF_EEPROM))
     {
-      char dataSize = 0;
-      char regBase = 0;
-      
-      // We have a valid packet: reset the keepalive timer and let's process the packet
-      if(0x42 == EEPROM.read(REG_EEPROM_VALID - START_OF_EEPROM))
-      {
-        timeout = EEPROM.read(REG_DISC_TIMEOUT - START_OF_EEPROM);
-      }
-      else
-      {
-        timeout = DEFAULT_TIMEOUT;
-      }
-      
-      regBase = ASCII2char(serialBuff[RX_REGISTER_HI], serialBuff[RX_REGISTER_LO]);
-      dataSize = ASCII2char(serialBuff[RX_SIZE_HI], serialBuff[RX_SIZE_LO]);
-#ifdef DEBUG
-      Serial.println((int)regBase);
-      Serial.println((int)dataSize);
-#endif
-      switch(serialBuff[RX_COMMAND_OFFSET])
-      {
-        default:
-          Serial.write("#N?");
-        break;
-        case COM_COMMAND:
-          if(dataSize)
+      timeout = EEPROM.read(REG_DISC_TIMEOUT - START_OF_EEPROM);
+    }
+    else
+    {
+      timeout = DEFAULT_TIMEOUT;
+    }
+    
+    regBase = ASCII2char(serialBuff[RX_REGISTER_HI], serialBuff[RX_REGISTER_LO]);
+    dataSize = ASCII2char(serialBuff[RX_SIZE_HI], serialBuff[RX_SIZE_LO]);
+
+    switch(serialBuff[RX_COMMAND_OFFSET])
+    {
+      default:
+        txString("#N?");
+      break;
+      case COM_COMMAND:
+        if(dataSize)
+        {
+          char loopCt, bufferOffset;
+          bufferOffset = RX_DATA_START;
+          for(loopCt = regBase; loopCt < (regBase + dataSize); loopCt++)
           {
-            char loopCt, bufferOffset;
-            bufferOffset = RX_DATA_START;
-            for(loopCt = regBase; loopCt < (regBase + dataSize); loopCt++)
+            if(loopCt < NUMBER_OF_SERVOS)
             {
-              if(loopCt < NUMBER_OF_SERVOS)
-              {
-                // set servo
-#ifdef DEBUG
-                Serial.print(ASCII2char(serialBuff[bufferOffset], serialBuff[bufferOffset + 1]));
-#endif                
-                servos[loopCt].write(ASCII2char(serialBuff[bufferOffset], serialBuff[bufferOffset + 1]));
-              }
-              else
-              {
-                if((loopCt >= START_OF_EEPROM) && (loopCt <= MAX_REGISTERS))
-                {
-                  // write to an EEPROM register
-                  EEPROM.write(loopCt - START_OF_EEPROM, ASCII2char(serialBuff[bufferOffset], serialBuff[bufferOffset + 1]));
-                }
-              }
-              bufferOffset += 2;
+              // set servo
+              
+              servos[loopCt] = ASCII2char(serialBuff[bufferOffset], serialBuff[bufferOffset + 1]);
             }
-            Serial.write("#P?");
-          }
-          else
-          {
-            // We don't know how to write 0 registers
-            Serial.write("#N?");
-          }
-        break;
-        case COM_QUERY:
-          if(dataSize)
-          {
-            char loopCt, bufferOffset;
-#ifdef DEBUG
-      Serial.println("In COM_QUERY");
-#endif
-            bufferOffset = TX_DATA_START;
-            for(loopCt = regBase; loopCt < (regBase + dataSize); loopCt++)
+            else
             {
-              if(loopCt < NUMBER_OF_SERVOS)
+              if((loopCt >= START_OF_EEPROM) && (loopCt <= MAX_REGISTERS))
               {
-                // read servo
-                char2ASCII(servos[loopCt].read(), &serialBuff[bufferOffset]);
+                // write to an EEPROM register
+                EEPROM.write(loopCt - START_OF_EEPROM, ASCII2char(serialBuff[bufferOffset], serialBuff[bufferOffset + 1]));
               }
-              else
-              {
-                if((loopCt >= START_OF_EEPROM) && (loopCt <= MAX_REGISTERS))
-                {
-                  // read from an EEPROM register
-                  char2ASCII(EEPROM.read(loopCt - START_OF_EEPROM), &serialBuff[bufferOffset]);
-                }
-              }
-              bufferOffset += 2;
             }
-            serialBuff[TX_RESPONSE] = RESP;
-            serialBuff[bufferOffset] = SERIAL_END_TX;
-            serialBuff[bufferOffset + 1] = 0;
-            Serial.write("#");
-            Serial.print(serialBuff);
-            
+            bufferOffset += 2;
           }
-          else
+          txString("#P?");
+        }
+        else
+        {
+          // We don't know how to write 0 registers
+          txString("#N?");
+        }
+      break;
+      case COM_QUERY:
+        if(dataSize)
+        {
+          char loopCt, bufferOffset;
+
+          bufferOffset = TX_DATA_START;
+          for(loopCt = regBase; loopCt < (regBase + dataSize); loopCt++)
           {
-            // We don't know how to read nothing!
-            Serial.write("#N?");
+            if(loopCt < NUMBER_OF_SERVOS)
+            {
+              // read servo
+              char2ASCII(servos[loopCt], &serialBuff[bufferOffset]);
+            }
+            else
+            {
+              if((loopCt >= START_OF_EEPROM) && (loopCt <= MAX_REGISTERS))
+              {
+                // read from an EEPROM register
+                char2ASCII(EEPROM.read(loopCt - START_OF_EEPROM), &serialBuff[bufferOffset]);
+              }
+            }
+            bufferOffset += 2;
           }
-        break;
-        case COM_KEEPALIVE:
-          Serial.write("#P?");
-        break;
-      }
+          serialBuff[TX_RESPONSE] = RESP;
+          serialBuff[bufferOffset] = SERIAL_END_TX;
+          serialBuff[bufferOffset + 1] = 0;
+          txString("#");
+          txString(serialBuff);
+          
+        }
+        else
+        {
+          // We don't know how to read nothing!
+          txString("#N?");
+        }
+      break;
+      case COM_KEEPALIVE:
+        txString("#P?");
+      break;
     }
   }
+}
+
+// The servo signals are generated by the following two interrupt handlers
+// One servo cycle lasts 20mS. Each channel follows the preceeding one, 
+// using up to 15mS (2.5 * 6).
+ISR(TIMER1_COMPA_vect)
+{
+  // This ISR occurs at the start of a servo sequence.
+  // Set the first channel up
+  
+  THROTTLE_PORT |= THROTTLE_MASK;
+  // Initialize the state machine
+  servoState = 0;
+  // Set the OC to trigger at the end of the first servo pulse
+  word2bytes.b[0] = servos[SERVO_THROTTLE];
+  word2bytes.b[1] = 0;
+  word2bytes.w += 63;
+  OCR1B = word2bytes.w;
+  // Enable the OCB interrupt in addition to the OCA one
+  TIMSK1 |= (1 << OCIE1B);
+  // Soft timer
+  if(timeCt)
+  {
+    timeCt--;
+  }
+  else
+  {
+    // One second tick (20mS * 5)
+    timeCt = 5;
+    if(timeout > 1)
+    {
+      // Stop at 1 second because a value of 0 means the timout is disabled.
+      timeout--;
+    }
+  }
+}
+
+ISR(TIMER1_COMPB_vect)
+{
+  switch(servoState)
+  {
+    case 0:
+    // End of Throttle pulse, start of Reverser 1
+    THROTTLE_PORT &= ~THROTTLE_MASK;
+    REVERSE1_PORT |= REVERSE1_MASK;
+    word2bytes.b[0] = servos[SERVO_REVERSER1];
+    word2bytes.b[1] = 0;
+    word2bytes.w += 63;
+    word2bytes.w += OCR1B;
+    OCR1B = word2bytes.w;
+    break;
+    
+    case 1:
+    // End of Reverser1 pulse, start of Reverser2
+    REVERSE1_PORT &= ~REVERSE1_MASK;
+    REVERSE2_PORT |= REVERSE2_MASK;
+    word2bytes.b[0] = servos[SERVO_REVERSER2];
+    word2bytes.b[1] = 0;
+    word2bytes.w += 63;
+    word2bytes.w += OCR1B;
+    OCR1B = word2bytes.w;
+    break;
+    
+    case 2:
+    // End of Reverser2 pulse, start of Drain1
+    REVERSE2_PORT &= ~REVERSE2_MASK;
+    DRAIN1_PORT |= DRAIN1_MASK;
+    word2bytes.b[0] = servos[SERVO_DRAIN1];
+    word2bytes.b[1] = 0;
+    word2bytes.w += 63;
+    word2bytes.w += OCR1B;
+    OCR1B = word2bytes.w;
+    break;
+    
+    case 3:
+    // End of Drain1 pulse, start of Drain2
+    DRAIN1_PORT &= ~DRAIN1_MASK;
+    DRAIN2_PORT |= DRAIN2_MASK;
+    word2bytes.b[0] = servos[SERVO_DRAIN2];
+    word2bytes.b[1] = 0;
+    word2bytes.w += 63;
+    word2bytes.w += OCR1B;
+    OCR1B = word2bytes.w;
+    break;
+    
+    case 4:
+    // End of Drain2 pulse, start of Whistle
+    DRAIN2_PORT &= ~DRAIN2_MASK;
+    WHISTLE_PORT |= WHISTLE_MASK;
+    word2bytes.b[0] = servos[SERVO_WHISTLE];
+    word2bytes.b[1] = 0;
+    word2bytes.w += 63;
+    word2bytes.w += OCR1B;
+    OCR1B = word2bytes.w;
+    break;    
+    
+    default:
+    // End of Whistle pulse.
+    WHISTLE_PORT &= ~WHISTLE_MASK;
+  }
+  servoState++;
 }
 
